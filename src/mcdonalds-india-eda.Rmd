@@ -1,0 +1,258 @@
+---
+title: "McDonalds India - EDA"
+author: "R Sangole"
+date: "Aug 1, 2022"
+output: 
+  html_document: 
+    toc: yes
+    highlight: kate
+    theme: paper
+    code_folding: hide
+    fig_width: 11
+    fig_height: 4
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, error=FALSE)
+knitr::opts_chunk$set(out.width="100%", fig.height = 6, split=FALSE, fig.align = 'default')
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Introduction
+
+Welcome...
+
+Image...
+
+Prose...
+
+# Initial Setup {.tabset}
+
+_Read through the initial setup in the 4 tabs below._
+
+## Libraries {.tabset}
+
+First, some I import some useful libraries and set some plotting defaults.
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Data Manipulation
+library(dplyr)
+library(tidyr)
+library(readr)
+library(skimr)
+library(purrr)
+library(stringr)
+library(urltools)
+library(magrittr)
+
+# Plots
+library(ggplot2)
+library(naniar)
+library(packcircles)
+library(ggridges)
+if(!require(streamgraph))
+  devtools::install_github("hrbrmstr/streamgraph", quiet = TRUE)
+library(streamgraph)
+library(patchwork)
+
+# Tables
+library(reactable)
+
+# Settings
+theme_set(theme_minimal(
+  base_size = 14,
+  base_family = "Menlo"))
+theme_update(
+  plot.title.position = "plot"
+)
+```
+
+
+## Read In {.tabset}
+
+Let's start be reading in the data...
+
+```{r message=FALSE, warning=FALSE}
+dat <- read_csv("../input/mcdonalds-india-menu-nutrition-facts/India_Menu.csv") %>% 
+  janitor::clean_names()
+glimpse(dat, 100)
+```
+
+## Quick View {.tabset}
+
+
+```{r paged.print=FALSE}
+skimr::skim(dat)
+```
+
+## Data Quality {.tabset}
+
+My favorite way of exploring missing data is to make it visible, using [Nick Tierney's](https://www.njtierney.com/about/) amazing [`{naniar}`](https://github.com/njtierney/naniar) package. There are a few columns with missing data. Let's look at these more closely.
+
+
+
+```{r message=FALSE, warning=FALSE}
+dat %>% 
+  vis_miss()
+```
+
+
+# Interesting Questions
+
+Since this is an open ended exploration, I'd like to posit some questions which will guide the flow of further work. 
+
+1. Which are the unhealthiest menu options, measured in terms of total fat content, total sugar, cholesterol, or sodium?
+1. Which are the most and least energy dense options?
+1. How does the Gourmet Menu differ from the Regular Menu?
+1. What patterns or clusters exist, if any, which can give us a clearer picture of this menu?
+
+<div>
+
+# Feature Development {.tabset}
+
+To aid answering many of these, I first need to create a few new features in the data set. 
+
+_Read about the feature development in the tabs below. We go from 13 columns to xx columns in the data set._
+
+## Serving Size {.tabset}
+
+The serving size by default is a character, with the units (g) embedded in the column. Let's clean this up. 
+
+```{r}
+dat <- dat %>% 
+  mutate(per_serve_size = as.numeric(stringr::str_extract(per_serve_size, "\\d*"))) %>% 
+  rename(per_serve_size_g = per_serve_size)
+glimpse(dat, 80)
+```
+
+## Calorie Counts {.tabset}
+
+```{r}
+dat <- dat %>% 
+  mutate(
+    cal_cat = case_when(
+      energy_k_cal <= 200 ~ "Low",
+      energy_k_cal > 200 & energy_k_cal <= 400 ~ "Medium",
+      energy_k_cal > 400 & energy_k_cal <= 600 ~ "High",
+      energy_k_cal > 600 ~ "Very High"
+    ),
+    cal_cat = factor(cal_cat, levels = c("Very High", "High", "Medium", "Low"), ordered = TRUE)
+  )
+glimpse(dat, 80)
+```
+
+
+</div>
+
+---
+
+<div>
+
+# Graphical EDA
+
+Now that I have the data sets prepared and ready, it's time for the fun part - being creative and creating some interesting visuals! 
+
+## Unhealthiest Menu Options {.tabset}
+
+_Q: Which are the unhealthiest menu options, measured in terms of total fat content, total sugar, cholesterol, or sodium?_
+
+### Fat Content {.tabset}
+
+```{r}
+dat %>%
+  ggplot(aes(
+    x = forcats::fct_reorder(menu_category, -total_fat_g),
+    y = total_fat_g
+  )) +
+  ggdist::stat_halfeye(
+    aes(thickness = stat(f * n)),
+    .width = 0,
+    width = .5,
+    position = position_nudge(x = .2),
+    alpha = 0.7
+  ) +
+  geom_quasirandom(
+    aes(color = cal_cat),
+    size = 4,
+    width = 0.2,
+    alpha = 0.5,
+    varwidth = TRUE
+  ) +
+  ggtitle("How does Total Fat content vary by the menu?") +
+  labs(
+    x = NULL,
+    y = "Total Fat (grams)",
+    subtitle = "Each point represents the fat content for 1 serving of the menu item"
+  ) -> p1
+p1
+
+dat %>%
+  mutate(fat_per_g = total_fat_g / per_serve_size_g) %>% 
+  # filter(fat_per_calorie < 1.5) %>% 
+  ggplot(aes(
+    x = forcats::fct_reorder(menu_category, -fat_per_g),
+    y = fat_per_g
+  )) +
+  stat_halfeye(
+    aes(thickness = stat(f * n)),
+    .width = 0,
+    width = .5,
+    position = position_nudge(x = .2),
+    alpha = 0.7
+  ) +
+  geom_quasirandom(
+    aes(color = cal_cat),
+    size = 4,
+    width = 0.2,
+    alpha = 0.5,
+    varwidth = TRUE
+  ) +
+  ggtitle("How does Total Fat content vary by the menu?") +
+  labs(
+    x = NULL,
+    y = "Total Fat (grams)",
+    subtitle = "Each point represents the fat content for each gram of food consumed."
+  ) -> p2
+p2
+```
+
+
+## Sugar Content {.tabset}
+
+### Fat Content {.tabset}
+
+```{r}
+dat %>%
+  ggplot(aes(
+    x = forcats::fct_reorder(menu_category, -total_sugars_g),
+    y = total_sugars_g
+  )) +
+  ggdist::stat_halfeye(
+    aes(thickness = stat(f * n)),
+    .width = 0,
+    width = .5,
+    position = position_nudge(x = .2),
+    alpha = 0.7
+  ) +
+  geom_quasirandom(
+    aes(color = cal_cat),
+    size = 4,
+    width = 0.2,
+    alpha = 0.5,
+    varwidth = TRUE
+  ) +
+  ggtitle("How does Total Sugar content vary by the menu?") +
+  labs(
+    x = NULL,
+    y = "Total Sugar (grams)",
+    subtitle = "Each point represents the sugar content for 1 serving of the menu item"
+  ) -> p1
+p1
+```
+
+</div>
+---
+
+That's it for now. I'll keep updating this EDA as I find time and think of more questions to explore.
+
+Thanks for reading!
