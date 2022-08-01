@@ -8,7 +8,7 @@ output:
     highlight: kate
     theme: paper
     code_folding: hide
-    fig_width: 11
+    fig_width: 12
     fig_height: 4
 ---
 
@@ -50,9 +50,7 @@ library(ggplot2)
 library(naniar)
 library(packcircles)
 library(ggridges)
-if(!require(streamgraph))
-  devtools::install_github("hrbrmstr/streamgraph", quiet = TRUE)
-library(streamgraph)
+library(ggbeeswarm)
 library(patchwork)
 
 # Tables
@@ -60,7 +58,7 @@ library(reactable)
 
 # Settings
 theme_set(theme_minimal(
-  base_size = 14,
+  base_size = 13,
   base_family = "Menlo"))
 theme_update(
   plot.title.position = "plot"
@@ -152,6 +150,46 @@ glimpse(dat, 80)
 
 Now that I have the data sets prepared and ready, it's time for the fun part - being creative and creating some interesting visuals! 
 
+```{r}
+make_dot_violin_plot <- function(dat,
+                                 title = NULL,
+                                 xlab = NULL,
+                                 ylab = NULL,
+                                 subtitle = NULL,
+                                 he_width = 0.5,
+                                 he_alpha = 0.7,
+                                 pt_size = 4,
+                                 pt_width = 0.2,
+                                 pt_alpha = 0.5){
+  dat %>%
+  ggplot(aes(
+    x = forcats::fct_reorder(
+      str_wrap(colorby, 10), -y),
+    y = y
+  )) +
+  ggdist::stat_halfeye(
+    aes(thickness = stat(f * n)),
+    width = he_width,
+    position = position_nudge(x = .2),
+    alpha = he_alpha
+  ) +
+  geom_quasirandom(
+    aes(color = cat),
+    size = pt_size,
+    width = pt_width,
+    alpha = pt_alpha,
+    varwidth = TRUE
+  ) +
+  ggtitle(title) +
+  labs(
+    x = xlab,
+    y = ylab,
+    subtitle = subtitle
+  ) 
+}
+```
+
+
 ## Unhealthiest Menu Options {.tabset}
 
 _Q: Which are the unhealthiest menu options, measured in terms of total fat content, total sugar, cholesterol, or sodium?_
@@ -159,95 +197,65 @@ _Q: Which are the unhealthiest menu options, measured in terms of total fat cont
 ### Fat Content {.tabset}
 
 ```{r}
-dat %>%
-  ggplot(aes(
-    x = forcats::fct_reorder(menu_category, -total_fat_g),
-    y = total_fat_g
-  )) +
-  ggdist::stat_halfeye(
-    aes(thickness = stat(f * n)),
-    .width = 0,
-    width = .5,
-    position = position_nudge(x = .2),
-    alpha = 0.7
-  ) +
-  geom_quasirandom(
-    aes(color = cal_cat),
-    size = 4,
-    width = 0.2,
-    alpha = 0.5,
-    varwidth = TRUE
-  ) +
-  ggtitle("How does Total Fat content vary by the menu?") +
-  labs(
-    x = NULL,
-    y = "Total Fat (grams)",
+dat %>% 
+  select(y = total_fat_g, cat = cal_cat, colorby = menu_category) %>% 
+  make_dot_violin_plot(
+    title = "How does Total Fat content vary by the menu?",
+    ylab = "Total Fat (grams)",
     subtitle = "Each point represents the fat content for 1 serving of the menu item"
-  ) -> p1
-p1
-
-dat %>%
-  mutate(fat_per_g = total_fat_g / per_serve_size_g) %>% 
-  # filter(fat_per_calorie < 1.5) %>% 
-  ggplot(aes(
-    x = forcats::fct_reorder(menu_category, -fat_per_g),
-    y = fat_per_g
-  )) +
-  stat_halfeye(
-    aes(thickness = stat(f * n)),
-    .width = 0,
-    width = .5,
-    position = position_nudge(x = .2),
-    alpha = 0.7
-  ) +
-  geom_quasirandom(
-    aes(color = cal_cat),
-    size = 4,
-    width = 0.2,
-    alpha = 0.5,
-    varwidth = TRUE
-  ) +
-  ggtitle("How does Total Fat content vary by the menu?") +
-  labs(
-    x = NULL,
-    y = "Total Fat (grams)",
-    subtitle = "Each point represents the fat content for each gram of food consumed."
-  ) -> p2
-p2
+  )
 ```
 
-
-## Sugar Content {.tabset}
-
-### Fat Content {.tabset}
+### Sugar Content {.tabset}
 
 ```{r}
-dat %>%
-  ggplot(aes(
-    x = forcats::fct_reorder(menu_category, -total_sugars_g),
-    y = total_sugars_g
-  )) +
-  ggdist::stat_halfeye(
-    aes(thickness = stat(f * n)),
-    .width = 0,
-    width = .5,
-    position = position_nudge(x = .2),
-    alpha = 0.7
-  ) +
-  geom_quasirandom(
-    aes(color = cal_cat),
-    size = 4,
-    width = 0.2,
-    alpha = 0.5,
-    varwidth = TRUE
-  ) +
-  ggtitle("How does Total Sugar content vary by the menu?") +
-  labs(
-    x = NULL,
-    y = "Total Sugar (grams)",
+dat %>% 
+  select(y = total_sugars_g, cat = cal_cat, colorby = menu_category) %>% 
+  make_dot_violin_plot(
+    title = "How does Total Sugar content vary by the menu?",
+    ylab = "Total Sugar (grams)",
     subtitle = "Each point represents the sugar content for 1 serving of the menu item"
-  ) -> p1
-p1
+  )
+```
+
+### Sodium Content {.tabset}
+
+```{r message=FALSE, warning=FALSE}
+dat %>% 
+  select(y = sodium_mg, cat = cal_cat, colorby = menu_category) %>% 
+  tidyr::drop_na() %>% 
+  make_dot_violin_plot(
+    he_width = .6,
+    title = "How does Sodium content vary by the menu?",
+    ylab = "Total Sodium (milligrams)",
+    subtitle = "Each point represents the sodium content for 1 serving of the menu item"
+  )
+```
+
+### Cholesterol Content {.tabset}
+
+```{r message=FALSE, warning=FALSE}
+dat %>% 
+  select(y = cholesterols_mg, cat = cal_cat, colorby = menu_category) %>% 
+  make_dot_violin_plot(
+    he_width = 1.5,
+    title = "How does Cholesterol content vary by the menu?",
+    ylab = "Total Cholesterol (milligrams)",
+    subtitle = "Each point represents the cholesterol content for 1 serving of the menu item"
+  )
+```
+
+### Carbohydrate Content {.tabset}
+
+```{r message=FALSE, warning=FALSE}
+dat %>% 
+  select(y = total_carbohydrate_g, cat = cal_cat, colorby = menu_category) %>% 
+  make_dot_violin_plot(
+    he_width = 1.5,
+    title = "How does Carbohydrate content vary by the menu?",
+    ylab = "Total Carbohydrate (grams)",
+    subtitle = "Each point represents the carbohydrate content for 1 serving of the menu item"
+  )
 ```
 
 </div>
