@@ -9,7 +9,8 @@ output:
     theme: paper
     code_folding: hide
     fig_width: 12
-    fig_height: 4
+    fig_height: 4.5
+    number_sections: yes
 ---
 
 ```{r setup, include=FALSE, echo=FALSE}
@@ -18,13 +19,13 @@ knitr::opts_chunk$set(out.width="100%", fig.height = 6, split=FALSE, fig.align =
 options(dplyr.summarise.inform = FALSE)
 ```
 
+![](https://images.rawpixel.com/image_1300/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA0L3BkMjMzLW1hc3Rlcm1yZzAxNTAwMDE1MTAuanBn.jpg)
+
 # Introduction
 
-Welcome...
+Welcome to an EDA of the McDonald's India Menu - Nutrition dataset, uploaded by [Deep Contractor](https://www.kaggle.com/datasets/deepcontractor/mcdonalds-india-menu-nutrition-facts).
 
-Image...
-
-Prose...
+You don't have to be a health expert to know fast food isn't good for you. But, how bad is it truly? Can we find patterns in the design of their menu? Let's explore.
 
 # Initial Setup {.tabset}
 
@@ -53,6 +54,14 @@ library(ggridges)
 library(ggbeeswarm)
 library(patchwork)
 
+# PCA
+if(!require(FactoMineR))
+  remotes::install_cran("FactoMineR")
+if(!require(factoextra))
+  remotes::install_cran("factoextra")
+library(FactoMineR)
+library(factoextra)
+
 # Tables
 library(reactable)
 
@@ -65,10 +74,9 @@ theme_update(
 )
 ```
 
-
 ## Read In {.tabset}
 
-Let's start be reading in the data...
+Let's start be reading in the data. There is only one CSV file, with the menu items and some measurements on each item. `{janitor::clean_names}` helps us get clean column names quickly.
 
 ```{r message=FALSE, warning=FALSE}
 dat <- read_csv("../input/mcdonalds-india-menu-nutrition-facts/India_Menu.csv") %>% 
@@ -78,6 +86,10 @@ glimpse(dat, 100)
 
 ## Quick View {.tabset}
 
+I love to take the first peek into a dataset with the amazing [`{skimr}`](https://docs.ropensci.org/skimr/index.html) package. Few takeaways:
+
+- `per_serve_size` doesn't sound like it should be of type character
+- no missing values except for `sodium_mg`
 
 ```{r paged.print=FALSE}
 skimr::skim(dat)
@@ -85,36 +97,33 @@ skimr::skim(dat)
 
 ## Data Quality {.tabset}
 
-My favorite way of exploring missing data is to make it visible, using [Nick Tierney's](https://www.njtierney.com/about/) amazing [`{naniar}`](https://github.com/njtierney/naniar) package. There are a few columns with missing data. Let's look at these more closely.
+My favorite way of exploring missing data is to make it visible, using [Nick Tierney's](https://www.njtierney.com/about/) amazing [`{naniar}`](https://github.com/njtierney/naniar) package.
 
-
+We can see the missing `sodium_mg` rows here.
 
 ```{r message=FALSE, warning=FALSE}
 dat %>% 
   vis_miss()
 ```
 
-
 # Interesting Questions
 
-Since this is an open ended exploration, I'd like to posit some questions which will guide the flow of further work. 
+Since this is an open ended exploration, I will posit some questions which will guide the flow of further work.
 
 1. Which are the unhealthiest menu options, measured in terms of total fat content, total sugar, cholesterol, or sodium?
 1. Which are the most and least energy dense options?
 1. How does the Gourmet Menu differ from the Regular Menu?
 1. What patterns or clusters exist, if any, which can give us a clearer picture of this menu?
 
-<div>
-
 # Feature Development {.tabset}
 
 To aid answering many of these, I first need to create a few new features in the data set. 
 
-_Read about the feature development in the tabs below. We go from 13 columns to xx columns in the data set._
+_We go from 13 columns to 15 columns in the data set._
 
 ## Serving Size {.tabset}
 
-The serving size by default is a character, with the units (g) embedded in the column. Let's clean this up. 
+The serving size by default is a character, with the units (g) embedded in the column. Let's clean this up, and rename the column to our convention `{measurement}_{unit}`.
 
 ```{r}
 dat <- dat %>% 
@@ -125,12 +134,25 @@ glimpse(dat, 80)
 
 ## Calorie Counts {.tabset}
 
+I want to explore some of the data using calories as a covariate. Here's the distribution of calories:
+
+```{r}
+ggplot(dat, aes(x = energy_k_cal)) +
+  geom_histogram(bins = 50) +
+  labs(
+    x = "Energy (kCal)",
+    y = "Counts"
+  )
+```
+
+I'll use this distribution as a guide to create some bins for the energy column.
+
 ```{r}
 dat <- dat %>% 
   mutate(
     cal_cat = case_when(
-      energy_k_cal <= 200 ~ "Low",
-      energy_k_cal > 200 & energy_k_cal <= 400 ~ "Medium",
+      energy_k_cal <= 100 ~ "Low",
+      energy_k_cal > 100 & energy_k_cal <= 400 ~ "Medium",
       energy_k_cal > 400 & energy_k_cal <= 600 ~ "High",
       energy_k_cal > 600 ~ "Very High"
     ),
@@ -139,128 +161,370 @@ dat <- dat %>%
 glimpse(dat, 80)
 ```
 
+## Energy Density {.tabset}
 
-</div>
+Finally, I'll add a feature called `energy density`, which is the number of calories per weight of food. I suspect things like cookies and cake (perhaps even the fizzy drinks?) would rank high on this feature.
 
----
-
-<div>
+```{r}
+dat <- dat %>% 
+  mutate(
+    energy_density = energy_k_cal / per_serve_size_g
+  )
+glimpse(dat, 80)
+```
 
 # Graphical EDA
 
-Now that I have the data sets prepared and ready, it's time for the fun part - being creative and creating some interesting visuals! 
+Now that I have the data sets prepared and ready, it's time for the fun part - being creative and creating some interesting visuals!
+
+There are four components to the EDA below:
+
+1. Unhealthiest menu exploration
+1. Energy fense foods exploration
+1. Gourmet vs Regular menu exploration
+1. Principal Component Analysis for multivariate exploration
 
 ```{r}
+# Custom plotting functions
+
 make_dot_violin_plot <- function(dat,
                                  title = NULL,
                                  xlab = NULL,
                                  ylab = NULL,
                                  subtitle = NULL,
+                                 legend_title = NULL,
+                                 n_outliers = 1,
+                                 annot_xnudge = 0.1,
+                                 annot_xoffset = 0.5,
+                                 annot_ynudge = 10,
+                                 annot_curv = 0.2,
+                                 label_size = 6,
                                  he_width = 0.5,
                                  he_alpha = 0.7,
                                  pt_size = 4,
                                  pt_width = 0.2,
                                  pt_alpha = 0.5){
-  dat %>%
-  ggplot(aes(
-    x = forcats::fct_reorder(
-      str_wrap(colorby, 10), -y),
-    y = y
-  )) +
-  ggdist::stat_halfeye(
-    aes(thickness = stat(f * n)),
-    width = he_width,
-    position = position_nudge(x = .2),
-    alpha = he_alpha
-  ) +
-  geom_quasirandom(
-    aes(color = cat),
-    size = pt_size,
-    width = pt_width,
-    alpha = pt_alpha,
-    varwidth = TRUE
-  ) +
-  ggtitle(title) +
-  labs(
-    x = xlab,
-    y = ylab,
-    subtitle = subtitle
-  ) 
+  
+  
+  pdat <- dat %>%
+    mutate(colorby = forcats::fct_reorder(str_wrap(colorby, 10), -y))
+  
+  outlier <- pdat %>% 
+    arrange(-y) %>% 
+    slice(n_outliers)
+  
+  g <- pdat %>% 
+    ggplot(aes(x = forcats::fct_reorder(colorby, -y),
+               y = y)) +
+    ggdist::stat_halfeye(
+      aes(thickness = stat(f * n)),
+      width = he_width,
+      position = position_nudge(x = .2),
+      alpha = he_alpha
+    ) +
+    geom_quasirandom(
+      aes(color = cat),
+      size = pt_size,
+      width = pt_width,
+      alpha = pt_alpha,
+      varwidth = TRUE
+    ) +
+    ggtitle(title) +
+    labs(
+      x = xlab,
+      y = ylab,
+      subtitle = subtitle,
+      color = legend_title
+    ) +
+    theme(legend.position = "bottom")
+  
+  if (n_outliers > 0) {
+    g <- g +
+      annotate(
+        "curve",
+        x = as.numeric(outlier$colorby) + annot_xoffset,
+        xend = as.numeric(outlier$colorby) + annot_xnudge,
+        y = outlier$y + annot_ynudge,
+        yend = outlier$y,
+        curvature = annot_curv,
+        arrow = arrow(length = unit(10, "pt"),
+                      type = "closed")
+      ) +
+      annotate(
+        "text",
+        x = as.numeric(outlier$colorby) + annot_xoffset,
+        y = outlier$y + annot_ynudge,
+        label = outlier$menu_items,
+        size = label_size,
+        hjust = -0.1
+      )
+  }
+  g
 }
 ```
-
 
 ## Unhealthiest Menu Options {.tabset}
 
 _Q: Which are the unhealthiest menu options, measured in terms of total fat content, total sugar, cholesterol, or sodium?_
 
-### Fat Content {.tabset}
+The plots below, each a combination of a jitter plot & a half-eye plot (itself is a combination of a density and an interval plot), are quite information rich. 
+
+The individual points allow us to see each data point, look for groupings if any and identify outliers. The density plot gives a visual for the each group's clustering. The interval plot gives us a quick understanding of the median point (the black dot), as well as the quantiles (the thick & thin lines).
+
+The X-axis is split by the Menu type while the colors are for the binned Calories feature I created.
+
+For each graph, I've also found the largest outlier and put a little annotation for what the item is.
+
+### Fats {.tabset}
+
+- Highest Calories also have the highest fat content
+- Gourmet menu, expectedly, is rich in fat
+- Beverages, expectedly, are the least fatty
+- Breakfast and McCafe menu's show a bi-modal distribution
 
 ```{r}
 dat %>% 
-  select(y = total_fat_g, cat = cal_cat, colorby = menu_category) %>% 
+  select(y = total_fat_g, cat = cal_cat, colorby = menu_category, menu_items) %>% 
   make_dot_violin_plot(
     title = "How does Total Fat content vary by the menu?",
     ylab = "Total Fat (grams)",
-    subtitle = "Each point represents the fat content for 1 serving of the menu item"
+    subtitle = "Each point represents the fat content for 1 serving of the menu item",
+    legend_title = "Calories kCal",
+    n_outliers = 1,
+    annot_ynudge = 1.5,
+    annot_curv = 0.1
   )
 ```
 
-### Sugar Content {.tabset}
+### Sugars {.tabset}
+
+- Beverages, expectedly, are the worst. 60g of sugar for a large fanta!
+- McCafe menu's - which are sold as breakfast items - are surprisingly sugary
 
 ```{r}
 dat %>% 
-  select(y = total_sugars_g, cat = cal_cat, colorby = menu_category) %>% 
+  select(y = total_sugars_g, cat = cal_cat, colorby = menu_category, menu_items) %>% 
   make_dot_violin_plot(
     title = "How does Total Sugar content vary by the menu?",
     ylab = "Total Sugar (grams)",
-    subtitle = "Each point represents the sugar content for 1 serving of the menu item"
+    subtitle = "Each point represents the sugar content for 1 serving of the menu item",
+    legend_title = "Calories kCal",
+    n_outliers = 1,
+    annot_ynudge = 1.5,
+    annot_curv = 0.1
   )
 ```
 
-### Sodium Content {.tabset}
+### Sodium {.tabset}
+
+This one really makes the skin crawl. The amount of sodium in the regular and gourmet menus should be a cause for concern for anyone consuming these on any regular basis. Considering the [average recommended sodium is 2,300 mg per day](https://www.cdc.gov/salt/index.htm), consuming a Ghee Rice with the Spicy Chicken would violate that in a single meal.
 
 ```{r message=FALSE, warning=FALSE}
 dat %>% 
-  select(y = sodium_mg, cat = cal_cat, colorby = menu_category) %>% 
+  select(y = sodium_mg, cat = cal_cat, colorby = menu_category, menu_items) %>% 
   tidyr::drop_na() %>% 
   make_dot_violin_plot(
     he_width = .6,
     title = "How does Sodium content vary by the menu?",
     ylab = "Total Sodium (milligrams)",
-    subtitle = "Each point represents the sodium content for 1 serving of the menu item"
+    subtitle = "Each point represents the sodium content for 1 serving of the menu item",
+    legend_title = "Calories kCal",
+    n_outliers = 1,
+    annot_ynudge = 1.5,
+    annot_curv = 0.1
   )
 ```
 
-### Cholesterol Content {.tabset}
+### Cholesterol {.tabset}
+
+Quite a few outliers here, for the gourmet, breakfast and regular menus. The popular Spicy Chicken burger is certainly the worst.
 
 ```{r message=FALSE, warning=FALSE}
 dat %>% 
-  select(y = cholesterols_mg, cat = cal_cat, colorby = menu_category) %>% 
+  select(y = cholesterols_mg, cat = cal_cat, colorby = menu_category, menu_items) %>% 
   make_dot_violin_plot(
     he_width = 1.5,
     title = "How does Cholesterol content vary by the menu?",
     ylab = "Total Cholesterol (milligrams)",
-    subtitle = "Each point represents the cholesterol content for 1 serving of the menu item"
+    subtitle = "Each point represents the cholesterol content for 1 serving of the menu item",
+    legend_title = "Calories kCal",
+    n_outliers = 1,
+    annot_ynudge = 1.5,
+    annot_curv = 0.1
   )
 ```
 
-### Carbohydrate Content {.tabset}
+### Carbohydrates {.tabset}
+
+Carbs are high, unsurprisingly, across the board for the McD menu.
 
 ```{r message=FALSE, warning=FALSE}
 dat %>% 
-  select(y = total_carbohydrate_g, cat = cal_cat, colorby = menu_category) %>% 
+  select(y = total_carbohydrate_g, cat = cal_cat, colorby = menu_category, menu_items) %>% 
+  make_dot_violin_plot(
+    he_width = .65,
+    title = "How does Carbohydrate content vary by the menu?",
+    ylab = "Total Carbohydrate (grams)",
+    subtitle = "Each point represents the carbohydrate content for 1 serving of the menu item",
+    legend_title = "Calories kCal",
+    n_outliers = 1,
+    annot_ynudge = 1.5,
+    annot_curv = 0.1
+  )
+```
+
+## Energy Dense Foods
+
+Aha! As I suspected, the Muffins are the worst offenders for calories/gram of food. However, look at the Condiments! Those little ketchup and mustard packets are _super_ energy dense!
+
+```{r}
+dat %>% 
+  select(y = energy_density, cat = cal_cat, colorby = menu_category, menu_items) %>% 
   make_dot_violin_plot(
     he_width = 1.5,
     title = "How does Carbohydrate content vary by the menu?",
     ylab = "Total Carbohydrate (grams)",
-    subtitle = "Each point represents the carbohydrate content for 1 serving of the menu item"
+    subtitle = "Each point represents the carbohydrate content for 1 serving of the menu item",
+    legend_title = "Calories kCal",
+    n_outliers = 1,
+    annot_ynudge = 0.15,
+    annot_curv = -0.1 
   )
 ```
 
-</div>
+## Gourmet vs Regular
+
+_Q: How does the Gourmet Menu differ from the Regular Menu?_
+
+Across the board, the Gourmet menu has items with higher values. Except Energy Density, all the other metrics are right-shifted. This is expected, as Gourmet items are regular items with extra oomph!
+
+```{r fig.height=5, message=FALSE, warning=FALSE}
+dat %>%
+  filter(menu_category %in% c("Regular Menu", "Gourmet Menu")) %>%
+  filter(trans_fat_g < 20) %>% 
+  select(menu_category, where(is.numeric)) %>%
+  tidyr::pivot_longer(-menu_category) %>%
+  ggplot(aes(x = value,
+             fill = menu_category)) +
+  geom_density(alpha = 0.8) +
+  facet_wrap(~ name,
+             scales = "free"
+  ) +
+  ggtitle(
+    label = "Comparison of the Gourmet & Regular Menu Options"
+  ) +
+  labs(
+    x = NULL,
+    y = "Probability density",
+    fill = NULL,
+    caption = "Outlier '5 piece Chicken Strips' with `trans_fat` of 75.3g removed"
+  ) +
+  theme(legend.position = "top",
+        plot.subtitle = element_text(face = "italic"))
+```
+
+## Principal Component Analysis {.tabset}
+
+One of my favorite methods of looking at multivariate numerical data is the simple, yet powerful tool - PCA. It's a great way to extract layers upon layers of information about the dataset from just a few plots. Let's explore this dataset using PCA.
+
+At a high-level, here is the workflow:
+
+1. Calculate the principal components
+1. Explore the variables on a correlation circle
+1. Explore the individual observations on a biplot
+
+We can throw in some clustering and data manipulation to get a pretty rich understanding of these data.
+
+###  Calc Components {.tabset}
+
+Here, I'm calculating the principal components on a scaled data set of the numeric features. I'm imputing the missing values of sodium to the median value. `prcomp()` is a popular method, but I like the `FactoMineR::PCA()` method which offers some great features for post processing.
+
+```{r message=FALSE, warning=FALSE}
+dat %>% 
+  select(where(is.numeric)) %>%
+  # Impute the missing sodium_mg values to the median
+  mutate(sodium_mg = ifelse(is.na(sodium_mg), median(sodium_mg, na.rm = TRUE), sodium_mg)) %>% 
+  scale() %>% 
+  as.data.frame() -> dat_scaled
+rownames(dat_scaled) <- dat$menu_items
+pca <- PCA(dat_scaled, graph = FALSE)
+pca
+```
+
+We can see that the 1st two PCs account for ~70% of variation in the numerical data. Not too shabby!
+
+```{r}
+fviz_eig(pca, addlabels = TRUE, ylim = c(0, 50))
+```
+
+### Explore Variables {.tabset}
+
+The 'variable correlation plot' or 'correlation circle plot' is an insightful plot. It shows the relationships between all the features. Summarizing from this  [article](http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials/#visualization-and-interpretation):
+
+- Positively correlated variables are grouped together.
+- Negatively correlated variables are positioned on opposite sides of the origin.
+- Distance between variables and the origin measures the quality of the variables, variables that are away from the origin are well represented.
+
+What are the takeaways?
+
+1. We can see 6 distinct clusters of features, which I've highlighted in the plot after running kmeans on the coordinates of the two principal component loadings of the features.
+    - Sugars and serving size are highly correlated
+    - Carb is on it's own
+    - Calories and Saturated Fat are correlated
+    - As are the Total Fat, Sodium and Proteins
+    - Cholesterol and energy density are correlated
+1. Almost all the features (except trans fat, and perhaps cholesterol) are heavily loaded in the 1st two PCs (i.e., they are close to the correlation circle), which means they're all actively participating in these components.
+1. Proteins, total fat, and sodium are slightly negatively correlated with features like total sugars and added sugars.
+
+```{r}
+clusts <- kmeans(pca$var$coord[,1:2], 6, nstart = 50)
+
+fviz_pca_var(
+  pca,
+  repel = TRUE,
+  col.var = as.factor(clusts$cluster),
+  legend.title = "Cluster"
+)
+```
+
+### Explore Individuals {.tabset}
+
+Now that we've looked at the features, let's look at the individual data points on the 1st two PCs.
+
+First, we plot just the points across PC1 and PC2. Immediately, we can see distinct clusters for each of the Menu types. On the left, the drinks form an unusually straight line parallel to PC2 - notice how the smalls are towards the x-axis, and large drinks on top. McCafe menu items take the center-half of the plot. Condiments occupy the 3rd quadrant, while the regular and gourmet menu are spread across and 1st and 4th quadrant.
+
+```{r message=FALSE, warning=FALSE}
+fviz_pca_ind(pca,
+             col.ind = dat$menu_category,
+             select.ind = list(cos2 = 0.5))
+```
+Now, if we superimpose the feature loadings on top of the plot above, we can extract quite a few insights.
+
+- beverages certainly follow the sugars vectors from small to large
+- 'Chicken Cheese Lava Burger' and 'Veg Maharaja Mac' have the highest calorie counts
+- The chicken burgers have the highest protein content, as expected
+- The McCafe menus have moderate sugars but also moderate carbs 
+
+_Remember, the axes center (0,0) indicate the region of average values for the principal component loadings. i.e., individual data points close to the axis will tend to have values close to the average of the dataset._ 
+
+```{r message=FALSE, warning=FALSE}
+fviz_pca_biplot(
+  pca,
+  col.ind = dat$menu_category,
+  geom.ind = "text"
+)
+```
+
+We can roughly call Principal Component 1 (Dim1) as the 'fats, proteins and calories' axis, while Principal Component 2 (Dim2) is the 'sugars and carbs' axis. Another way to look at the two dims is using a factor contribution plot, like the one below.
+
+```{r}
+p1 <- fviz_contrib(pca, choice = "var", axes = 1, top = 10)
+p2 <- fviz_contrib(pca, choice = "var", axes = 2, top = 10)
+p1/p2
+```
+
 ---
 
-That's it for now. I'll keep updating this EDA as I find time and think of more questions to explore.
+That was a fun exploration of these data. What else can you think of to explore?
 
-Thanks for reading!
+Cheers!
